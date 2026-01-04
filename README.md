@@ -22,14 +22,7 @@ A standalone web explorer for Kaspa Testnet 12 that can run independently withou
 Start your Kaspa testnet 12 node with the following command:
 
 ```bash
-cargo run --release --bin=kaspad -- \
-  --utxoindex \
-  --testnet \
-  --netsuffix=12 \
-  --enable-unsynced-mining \
-  --listen=0.0.0.0:16311 \
-  --addpeer=82.166.83.140 \
-  --appdir "D:\testnet12"
+cargo run --release --bin=kaspad -- --utxoindex --testnet --netsuffix=12 --enable-unsynced-mining --listen=0.0.0.0:16311 --addpeer=82.166.83.140 --appdir "D:\testnet12"
 ```
 
 ## Installation and Usage
