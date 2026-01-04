@@ -7,20 +7,24 @@ use axum::{
 use kaspa_grpc_client::GrpcClient;
 use kaspa_rpc_core::api::rpc::RpcApi;
 use kaspa_addresses::Address;
+use kaspa_hashes::Hash;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tokio::sync::RwLock;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 use clap::Parser;
 
+// Type alias for balance cache to reduce complexity
+type BalanceCache = Arc<RwLock<HashMap<String, (u64, Vec<UtxoInfo>)>>>;
+
 #[derive(Clone)]
 struct AppState {
     client: Arc<RwLock<Option<GrpcClient>>>,
     network_info: Arc<RwLock<NetworkInfo>>,
-    balance_cache: Arc<RwLock<HashMap<String, (u64, Vec<UtxoInfo>)>>>, // Cache: address -> (balance, utxos)
+    balance_cache: BalanceCache, // Cache: address -> (balance, utxos)
     peer_info: Arc<RwLock<Vec<PeerInfo>>>, // Cache peer information
 }
 
@@ -36,7 +40,7 @@ struct BlockInfo {
     hash: String,
     level: u64,
     parents: String,
-    transactions: Vec<String>, // Simplified for now
+    tx_count: usize,
     timestamp: i64,
     difficulty: f64,
 }
@@ -44,8 +48,8 @@ struct BlockInfo {
 #[derive(Debug, Serialize)]
 struct TransactionInfo {
     id: String,
-    inputs: Vec<String>,
-    outputs: Vec<String>,
+    input_count: usize,
+    output_count: usize,
     amount: u64,
 }
 
@@ -112,11 +116,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/", get(index))
         .route("/api/info", get(get_network_info))
         .route("/api/blocks", get(get_blocks))
-        .route("/api/blocks/:hash", get(get_block))
         .route("/api/mempool", get(get_mempool))
-        .route("/api/tx/:id", get(get_transaction))
         .route("/api/address/:address", get(get_address_balance))
-        .route("/api/peers", get(get_peer_info)) // New peer info endpoint
+        .route("/api/peers", get(get_peer_info))
         .nest_service("/static", ServeDir::new("static"))
         .layer(
             CorsLayer::new()
@@ -179,80 +181,93 @@ async fn get_network_info(State(state): State<AppState>) -> Json<NetworkInfo> {
 async fn get_blocks(State(state): State<AppState>) -> Result<Json<BlocksResponse>, StatusCode> {
     let client_guard = state.client.read().await;
     let client = client_guard.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
-    
-    // Get the latest blocks first
-    let response = client.get_blocks(None, true, false).await
+
+    // Use DAG info as the single source of truth for the current virtual and counts.
+    let dag_info = client
+        .get_block_dag_info()
+        .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    
-    let available_blocks = response.blocks.len();
-    log::info!("Retrieved {} blocks from node", available_blocks);
-    
-    // Try to get the actual block count by querying the block DAG info
-    let total_count;
-    
-    // Get the block DAG info to get accurate block counts
-    match client.get_block_dag_info().await {
-        Ok(dag_info) => {
-            // Use the block count from DAG info if available
-            total_count = dag_info.block_count as usize;
-            log::info!("Got block count from DAG info: {}", total_count);
-        }
-        Err(e) => {
-            log::warn!("Failed to get DAG info: {:?}, using fallback method", e);
-            
-            // If DAG info fails, use a reasonable estimate based on testnet age
-            // Kaspa testnet 12 has been running since early 2024
-            // With ~1 block per second, that's roughly 30M+ blocks, but let's be conservative
-            let estimated_blocks = 1000000; // 1 million blocks as conservative estimate
-            total_count = estimated_blocks;
-            log::info!("Using conservative estimate: {} blocks", total_count);
-        }
-    }
-    
-    // Process and return the last 20 blocks for display to maintain performance
-    let display_blocks: Vec<BlockInfo> = response.blocks.into_iter()
-        .rev() // Get newest blocks first
-        .take(20) // Limit to 20 blocks for display
-        .map(|block| BlockInfo {
+
+    let total_count = dag_info.block_count as usize;
+
+    // Walk backwards from the virtual selected parent (sink) to get the latest blocks.
+    // This avoids relying on get_blocks batching/ordering and ensures the list changes as the tip advances.
+    let mut current_hash = dag_info.sink;
+    let mut display_blocks: Vec<BlockInfo> = Vec::with_capacity(20);
+
+    for _ in 0..20 {
+        let block = client
+            .get_block(current_hash.clone(), false)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        let mut seen: HashSet<Hash> = HashSet::new();
+        let parent_hashes: Vec<Hash> = block
+            .header
+            .parents_by_level
+            .get(0)
+            .into_iter()
+            .flat_map(|level0| level0.iter())
+            .cloned()
+            .filter(|h| seen.insert(*h))
+            .collect();
+
+        let parents = if parent_hashes.is_empty() {
+            "None".to_string()
+        } else {
+            parent_hashes
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+
+        // When include_transactions=false, transactions may be omitted. Use verbose transaction_ids when available.
+        let tx_count = block
+            .verbose_data
+            .as_ref()
+            .map(|v| v.transaction_ids.len())
+            .unwrap_or_else(|| block.transactions.len());
+
+        let difficulty = block
+            .verbose_data
+            .as_ref()
+            .map(|v| v.difficulty)
+            .unwrap_or(block.header.bits as f64);
+
+        display_blocks.push(BlockInfo {
             hash: block.header.hash.to_string(),
             level: block.header.daa_score,
-            parents: format!("{} parents", block.header.parents_by_level.len()), // Simplified
-            transactions: vec![], // Simplified for now
+            parents,
+            tx_count,
             timestamp: block.header.timestamp as i64,
-            difficulty: block.header.bits as f64,
-        })
-        .collect();
-    
-    log::info!("Returning {} of {} blocks for display (total count: {})", 
-               display_blocks.len(), available_blocks, total_count);
+            difficulty,
+        });
+
+        // Advance to selected parent (preferred) or first direct parent as fallback.
+        let next_hash = block
+            .verbose_data
+            .as_ref()
+            .map(|v| v.selected_parent_hash.clone())
+            .filter(|h| *h != Hash::default())
+            .or_else(|| parent_hashes.first().cloned());
+
+        match next_hash {
+            Some(h) => current_hash = h,
+            None => break,
+        }
+    }
+
+    log::info!(
+        "Returning {} blocks for display (total count: {})",
+        display_blocks.len(),
+        total_count
+    );
     
     Ok(Json(BlocksResponse {
         total_count,
         blocks: display_blocks,
     }))
-}
-
-async fn get_block(
-    State(state): State<AppState>,
-    axum::extract::Path(hash): axum::extract::Path<String>,
-) -> Result<Json<BlockInfo>, StatusCode> {
-    let client_guard = state.client.read().await;
-    let client = client_guard.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
-    
-    let hash = hash.parse().map_err(|_| StatusCode::BAD_REQUEST)?;
-    let block = client.get_block(hash, false).await
-        .map_err(|_| StatusCode::NOT_FOUND)?;
-    
-    let block_info = BlockInfo {
-        hash: block.header.hash.to_string(),
-        level: block.header.daa_score,
-        parents: block.header.parents_by_level.iter().map(|p| format!("{:?}", p)).collect(),
-        transactions: vec![], // Simplified for now
-        timestamp: block.header.timestamp as i64,
-        difficulty: block.header.bits as f64,
-    };
-    
-    Ok(Json(block_info))
 }
 
 async fn get_mempool(State(state): State<AppState>) -> Result<Json<MempoolInfo>, StatusCode> {
@@ -280,32 +295,39 @@ async fn get_mempool(State(state): State<AppState>) -> Result<Json<MempoolInfo>,
         }
     };
     
-    // Limit to first 50 transactions to reduce lag
+    // Get all transactions but limit display to reduce lag
+    let total_size = response.len();
     let transactions: Vec<TransactionInfo> = response.into_iter()
-        .take(50) // Limit to 50 transactions
-        .enumerate()
-        .map(|(i, entry)| TransactionInfo {
-            id: format!("tx-{}", i),
-            inputs: vec![format!("{} inputs", entry.transaction.inputs.len())], // Simplified
-            outputs: vec![format!("{} outputs", entry.transaction.outputs.len())], // Simplified
-            amount: entry.transaction.outputs.iter().map(|o| o.value).sum(),
+        .take(50) // Limit display to 50 transactions for performance
+        .map(|entry| {
+            let tx = &entry.transaction;
+            let id = tx
+                .verbose_data
+                .as_ref()
+                .map(|v| {
+                    if v.transaction_id != Hash::default() {
+                        v.transaction_id.to_string()
+                    } else {
+                        v.hash.to_string()
+                    }
+                })
+                .unwrap_or_default();
+
+            TransactionInfo {
+                id,
+                input_count: tx.inputs.len(),
+                output_count: tx.outputs.len(),
+                amount: tx.outputs.iter().map(|o| o.value).sum(),
+            }
         })
         .collect();
     
     let mempool_info = MempoolInfo {
-        size: transactions.len(),
+        size: total_size, // Show actual mempool size, not limited size
         transactions,
     };
     
     Ok(Json(mempool_info))
-}
-
-async fn get_transaction(
-    State(_state): State<AppState>,
-    axum::extract::Path(_id): axum::extract::Path<String>,
-) -> Result<Json<TransactionInfo>, StatusCode> {
-    // This is a placeholder - would need to implement transaction lookup
-    Err(StatusCode::NOT_IMPLEMENTED)
 }
 
 async fn get_address_balance(
@@ -315,17 +337,13 @@ async fn get_address_balance(
     let client_guard = state.client.read().await;
     let client = client_guard.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
     
-    // Check cache first
+    log::info!("=== BALANCE REQUEST FOR ADDRESS: {} ===", address);
+    
+    // ALWAYS clear cache for this address to ensure fresh data
     {
-        let cache = state.balance_cache.read().await;
-        if let Some((cached_balance, cached_utxos)) = cache.get(&address) {
-            log::info!("Returning cached balance for address: {} ({} KAS)", address, cached_balance / 100000000);
-            return Ok(Json(AddressBalance {
-                address: address.clone(),
-                balance: *cached_balance,
-                utxos: cached_utxos.clone(),
-            }));
-        }
+        let mut cache = state.balance_cache.write().await;
+        cache.remove(&address);
+        log::info!("AUTO-CLEARED cache for address: {}", address);
     }
     
     // Parse the address
@@ -347,9 +365,17 @@ async fn get_address_balance(
     let mut display_utxos = Vec::new();
     
     // Process ALL UTXOs for accurate balance calculation
+    log::info!("Processing {} UTXOs for address {}", utxos_response.len(), address);
     for (index, utxo) in utxos_response.iter().enumerate() {
         let amount = utxo.utxo_entry.amount;
         total_balance += amount;
+        
+        // Log first few UTXOs for debugging
+        if index < 5 {
+            log::info!("UTO {}: amount = {} KAS, outpoint = {}:{}", 
+                       index, amount / 100000000, 
+                       utxo.outpoint.transaction_id, utxo.outpoint.index);
+        }
         
         // Log every 100th UTXO to show progress for large addresses
         if index % 100 == 0 {
@@ -370,10 +396,12 @@ async fn get_address_balance(
     log::info!("Total balance for address {}: {} KAS (from {} UTXOs)", 
                address, total_balance / 100000000, utxos_response.len());
     
-    // Cache the result (full balance + limited display)
+    // Cache the FRESH result (full balance + limited display)
     {
         let mut cache = state.balance_cache.write().await;
         cache.insert(address.clone(), (total_balance, display_utxos.clone()));
+        log::info!("CACHED: Fresh balance {} KAS for address {} with {} UTXOs", 
+                   total_balance / 100000000, address, display_utxos.len());
     }
     
     let address_balance = AddressBalance {
@@ -381,6 +409,9 @@ async fn get_address_balance(
         balance: total_balance, // Always the FULL balance
         utxos: display_utxos, // Limited display
     };
+    
+    log::info!("=== RETURNING FRESH BALANCE: {} KAS for address {} ===", 
+               address_balance.balance / 100000000, address_balance.address);
     
     Ok(Json(address_balance))
 }
@@ -395,29 +426,28 @@ async fn get_peer_info(State(state): State<AppState>) -> Json<Vec<PeerInfo>> {
             Ok(info) => {
                 log::info!("Successfully fetched peer info: {:?}", info);
                 
-                // Create peer info from the connected node
+                // Create peer info from connected node
                 let peer_list = vec![
-                    PeerInfo {
-                        id: "local-node".to_string(),
-                        address: state.network_info.read().await.server_url.clone(),
-                        is_connected: true,
-                        last_seen: "now".to_string(),
-                    },
-                    PeerInfo {
-                        id: "peer-82.166.83.140".to_string(),
-                        address: "82.166.83.140:16311".to_string(),
-                        is_connected: true,
-                        last_seen: "active".to_string(),
-                    }
-                ];
-                
-                // Update peer cache
-                {
-                    let mut peer_cache = state.peer_info.write().await;
-                    *peer_cache = peer_list.clone();
-                }
-                
-                return Json(peer_list);
+            PeerInfo {
+                id: "local".to_string(),
+                address: state.network_info.read().await.server_url.clone(),
+                is_connected: true,
+                last_seen: "now".to_string(),
+            },
+            PeerInfo {
+                id: "peer-82.166.83.140".to_string(),
+                address: "82.166.83.140:16311".to_string(),
+                is_connected: true, // Assume peer is connected
+                last_seen: "recent".to_string(),
+            },
+        ];
+        
+        // Cache and return peer list
+        {
+            let mut peer_cache = state.peer_info.write().await;
+            *peer_cache = peer_list.clone();
+        }
+        Json(peer_list)
             }
             Err(e) => {
                 log::error!("Failed to get peer info: {:?}", e);
@@ -425,16 +455,16 @@ async fn get_peer_info(State(state): State<AppState>) -> Json<Vec<PeerInfo>> {
                 // Return cached peer info if available
                 let peer_cache = state.peer_info.read().await;
                 if peer_cache.is_empty() {
-                    return Json(vec![
+                    Json(vec![
                         PeerInfo {
                             id: "local-node".to_string(),
                             address: state.network_info.read().await.server_url.clone(),
                             is_connected: false,
                             last_seen: "error".to_string(),
                         }
-                    ]);
+                    ])
                 } else {
-                    return Json(peer_cache.clone());
+                    Json(peer_cache.clone())
                 }
             }
         }
@@ -442,16 +472,16 @@ async fn get_peer_info(State(state): State<AppState>) -> Json<Vec<PeerInfo>> {
         // No client connection, return cached info
         let peer_cache = state.peer_info.read().await;
         if peer_cache.is_empty() {
-            return Json(vec![
+            Json(vec![
                 PeerInfo {
                     id: "local-node".to_string(),
                     address: state.network_info.read().await.server_url.clone(),
                     is_connected: false,
                     last_seen: "disconnected".to_string(),
                 }
-            ]);
+            ])
         } else {
-            return Json(peer_cache.clone());
+            Json(peer_cache.clone())
         }
     }
 }

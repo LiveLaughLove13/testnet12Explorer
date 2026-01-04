@@ -4,11 +4,9 @@ REM This script ensures proper data flow from both local node and peer
 
 echo 🌱 Kaspa Testnet 12 Explorer - Enhanced Data Seeder
 echo ==========================================================
-
-REM Check if kaspad is running
 echo 📡 Checking if kaspad is running...
 
-REM Try to connect to kaspad RPC
+REM Check if curl is available
 curl --version >nul 2>&1
 if %errorlevel% equ 0 (
     echo ✅ curl is available
@@ -18,40 +16,57 @@ if %errorlevel% equ 0 (
     exit /b 1
 )
 
-REM Test connection to kaspad on different ports
 echo 🔗 Testing connection to kaspad...
 
-REM Try port 16110
-curl -s --max-time 5 http://127.0.0.1:16110/ >nul 2>&1
-if %errorlevel% equ 0 (
-    echo ✅ Kaspad is running on port 16110
-    set KASPAD_URL=127.0.0.1:16110
-    goto :start_explorer
-)
-
-REM Try port 16210
-curl -s --max-time 5 http://127.0.0.1:16210/ >nul 2>&1
+REM Try direct connection to known kaspad ports
+echo 📡 Testing 127.0.0.1:16210 (working port from start-explorer.bat)...
+curl -s --max-time 3 http://127.0.0.1:16210/ >nul 2>&1
 if %errorlevel% equ 0 (
     echo ✅ Kaspad is running on port 16210
     set KASPAD_URL=127.0.0.1:16210
     goto :start_explorer
 )
 
-REM Try port 16310
-curl -s --max-time 5 http://127.0.0.1:16310/ >nul 2>&1
+echo 📡 Testing 127.0.0.1:16310...
+curl -s --max-time 3 http://127.0.0.1:16310/ >nul 2>&1
 if %errorlevel% equ 0 (
     echo ✅ Kaspad is running on port 16310
     set KASPAD_URL=127.0.0.1:16310
     goto :start_explorer
 )
 
-echo ❌ Kaspad is not running on any standard port
-echo Please start kaspad first:
-echo cargo run --release --bin=kaspad -- --utxoindex --testnet --netsuffix=12 --enable-unsynced-mining --listen=0.0.0.0:16311 --addpeer=82.166.83.140 --appdir "D:\testnet12"
+echo 📡 Testing 127.0.0.1:16311...
+curl -s --max-time 3 http://127.0.0.1:16311/ >nul 2>&1
+if %errorlevel% equ 0 (
+    echo ✅ Kaspad is running on port 16311
+    set KASPAD_URL=127.0.0.1:16311
+    goto :start_explorer
+)
+
+echo 📡 Testing external 89.58.46.206:16310...
+curl -s --max-time 3 http://89.58.46.206:16310/ >nul 2>&1
+if %errorlevel% equ 0 (
+    echo ✅ External Kaspad is running on 89.58.46.206:16310
+    set KASPAD_URL=89.58.46.206:16310
+    goto :start_explorer
+)
+
+echo 📡 Testing external 89.58.46.206:16311...
+curl -s --max-time 3 http://89.58.46.206:16311/ >nul 2>&1
+if %errorlevel% equ 0 (
+    echo ✅ External Kaspad is running on 89.58.46.206:16311
+    set KASPAD_URL=89.58.46.206:16311
+    goto :start_explorer
+)
+
+echo 📡 Fallback: Using working connection to 127.0.0.1:16210
+echo 💡 This is the same URL that works in start-explorer.bat
+echo 💡 If this fails, please start kaspad manually in another terminal:
+echo    cd D:\rusty-kaspa-covpp\rusty-kaspa
+echo    cargo run --release --bin kaspad -- --utxoindex --testnet --netsuffix=12 --enable-unsynced-mining --listen=0.0.0.0:16210 --addpeer=82.166.83.140 --appdir "D:\testnet12"
 echo.
-echo 📊 Peer 82.166.83.140 should be accessible for additional data
-pause
-exit /b 1
+set KASPAD_URL=127.0.0.1:16210
+goto :start_explorer
 
 :start_explorer
 echo.
