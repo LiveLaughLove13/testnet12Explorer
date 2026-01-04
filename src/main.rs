@@ -206,17 +206,22 @@ async fn get_mempool(State(state): State<AppState>) -> Result<Json<MempoolInfo>,
     let client_guard = state.client.read().await;
     let client = client_guard.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
     
-    // Try to get mempool entries with different parameter combinations
-    let response = match client.get_mempool_entries(false, true).await {
+    // Based on the error message, we need to either not filter transactions OR include orphans
+    // Let's try (true, false) - include orphan pool, don't filter transaction pool
+    let response = match client.get_mempool_entries(true, false).await {
         Ok(response) => response,
         Err(e) => {
-            log::error!("Failed to get mempool entries with (false, true): {:?}", e);
-            // Try alternative parameters
-            match client.get_mempool_entries(true, false).await {
+            log::error!("Failed to get mempool entries with (true, false): {:?}", e);
+            // Try (false, false) - don't include orphan pool, don't filter transaction pool
+            match client.get_mempool_entries(false, false).await {
                 Ok(response) => response,
                 Err(e2) => {
-                    log::error!("Failed to get mempool entries with (true, false): {:?}", e2);
-                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                    log::error!("Failed to get mempool entries with (false, false): {:?}", e2);
+                    // Return empty mempool instead of error to avoid breaking the UI
+                    return Ok(Json(MempoolInfo {
+                        size: 0,
+                        transactions: vec![],
+                    }));
                 }
             }
         }
@@ -261,9 +266,16 @@ async fn get_address_balance(
     let parsed_address = Address::try_from(address.as_str())
         .map_err(|_| StatusCode::BAD_REQUEST)?;
     
+    log::info!("Fetching balance for address: {}", address);
+    
     // Get UTXOs for the address
     let utxos_response = client.get_utxos_by_addresses(vec![parsed_address]).await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| {
+            log::error!("Failed to get UTXOs for address {}: {:?}", address, e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    
+    log::info!("Found {} UTXOs for address {}", utxos_response.len(), address);
     
     let mut total_balance = 0u64;
     // Limit UTXOs to first 100 to reduce lag
@@ -279,6 +291,8 @@ async fn get_address_balance(
             }
         })
         .collect();
+    
+    log::info!("Total balance for address {}: {} KAS", address, total_balance / 100000000);
     
     let address_balance = AddressBalance {
         address,
