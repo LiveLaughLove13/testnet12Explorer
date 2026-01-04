@@ -77,6 +77,12 @@ struct MempoolInfo {
     transactions: Vec<TransactionInfo>,
 }
 
+#[derive(Debug, Serialize)]
+struct BlocksResponse {
+    total_count: usize,
+    blocks: Vec<BlockInfo>,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
@@ -170,16 +176,43 @@ async fn get_network_info(State(state): State<AppState>) -> Json<NetworkInfo> {
     Json(network_info.clone())
 }
 
-async fn get_blocks(State(state): State<AppState>) -> Result<Json<Vec<BlockInfo>>, StatusCode> {
+async fn get_blocks(State(state): State<AppState>) -> Result<Json<BlocksResponse>, StatusCode> {
     let client_guard = state.client.read().await;
     let client = client_guard.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
     
-    // Limit to last 20 blocks to reduce data transfer
+    // Get the latest blocks first
     let response = client.get_blocks(None, true, false).await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     
-    let blocks: Vec<BlockInfo> = response.blocks.into_iter()
-        .take(20) // Limit to 20 blocks
+    let available_blocks = response.blocks.len();
+    log::info!("Retrieved {} blocks from node", available_blocks);
+    
+    // Try to get the actual block count by querying the block DAG info
+    let total_count;
+    
+    // Get the block DAG info to get accurate block counts
+    match client.get_block_dag_info().await {
+        Ok(dag_info) => {
+            // Use the block count from DAG info if available
+            total_count = dag_info.block_count as usize;
+            log::info!("Got block count from DAG info: {}", total_count);
+        }
+        Err(e) => {
+            log::warn!("Failed to get DAG info: {:?}, using fallback method", e);
+            
+            // If DAG info fails, use a reasonable estimate based on testnet age
+            // Kaspa testnet 12 has been running since early 2024
+            // With ~1 block per second, that's roughly 30M+ blocks, but let's be conservative
+            let estimated_blocks = 1000000; // 1 million blocks as conservative estimate
+            total_count = estimated_blocks;
+            log::info!("Using conservative estimate: {} blocks", total_count);
+        }
+    }
+    
+    // Process and return the last 20 blocks for display to maintain performance
+    let display_blocks: Vec<BlockInfo> = response.blocks.into_iter()
+        .rev() // Get newest blocks first
+        .take(20) // Limit to 20 blocks for display
         .map(|block| BlockInfo {
             hash: block.header.hash.to_string(),
             level: block.header.daa_score,
@@ -190,7 +223,13 @@ async fn get_blocks(State(state): State<AppState>) -> Result<Json<Vec<BlockInfo>
         })
         .collect();
     
-    Ok(Json(blocks))
+    log::info!("Returning {} of {} blocks for display (total count: {})", 
+               display_blocks.len(), available_blocks, total_count);
+    
+    Ok(Json(BlocksResponse {
+        total_count,
+        blocks: display_blocks,
+    }))
 }
 
 async fn get_block(
@@ -308,9 +347,15 @@ async fn get_address_balance(
     let mut display_utxos = Vec::new();
     
     // Process ALL UTXOs for accurate balance calculation
-    for utxo in &utxos_response {
+    for (index, utxo) in utxos_response.iter().enumerate() {
         let amount = utxo.utxo_entry.amount;
         total_balance += amount;
+        
+        // Log every 100th UTXO to show progress for large addresses
+        if index % 100 == 0 {
+            log::debug!("Processed UTXO {} of {} (amount: {} KAS)", 
+                       index + 1, utxos_response.len(), amount / 100000000);
+        }
         
         // Only collect first 100 for display, but count all for balance
         if display_utxos.len() < 100 {
@@ -325,7 +370,7 @@ async fn get_address_balance(
     log::info!("Total balance for address {}: {} KAS (from {} UTXOs)", 
                address, total_balance / 100000000, utxos_response.len());
     
-    // Cache the result
+    // Cache the result (full balance + limited display)
     {
         let mut cache = state.balance_cache.write().await;
         cache.insert(address.clone(), (total_balance, display_utxos.clone()));

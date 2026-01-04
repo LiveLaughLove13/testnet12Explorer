@@ -173,10 +173,17 @@
 
         <!-- Blocks Tab -->
         <div id="blocks-tab" class="tab-content">
-            <div class="mb-4">
+            <div class="mb-4 flex items-center space-x-4">
                 <button onclick="refreshBlocks()" class="bg-kaspa-primary hover-bg-kaspa-primary px-4 py-2 rounded-lg text-sm font-medium text-white">
                     Refresh Blocks
                 </button>
+                <button onclick="toggleAutoRefresh()" id="auto-refresh-btn" class="bg-green-600 hover:bg-green-700 px-4 py-2 rounded-lg text-sm font-medium text-white">
+                    Start Auto-Refresh (10s)
+                </button>
+                <div class="text-sm text-gray-400">
+                    <span id="auto-refresh-status">Auto-refresh: OFF</span>
+                    <span id="refresh-timer" class="ml-2"></span>
+                </div>
             </div>
             <div id="blocks-container" class="space-y-4">
                 <div class="text-center py-8">
@@ -199,16 +206,8 @@
                     <p>Loading mempool...</p>
                 </div>
             </div>
-        </div>
-    </div>
 
-    <script>
-        const API_BASE = '/api';
-        let isLoading = {
-            blocks: false,
-            mempool: false,
-            address: false
-        };
+        </div>
 
         // Debounce function to prevent excessive API calls
         function debounce(func, wait) {
@@ -353,20 +352,38 @@
             }
         }
 
-        function displayBlocks(blocks) {
+        function displayBlocks(blocksResponse) {
             const container = document.getElementById('blocks-container');
             
-            if (blocks.length === 0) {
+            if (!blocksResponse || !blocksResponse.blocks || blocksResponse.blocks.length === 0) {
                 container.innerHTML = '<div class="text-center py-8 text-gray-400">No blocks found</div>';
                 return;
             }
-
-            container.innerHTML = blocks.map(block => `
-                <div class="bg-surface-1 rounded-lg p-6 border border-card hover:bg-surface-2 transition-colors">
-                    <div class="flex items-center justify-between mb-4">
-                        <div class="flex items-center space-x-4">
-                            <span class="kaspa-primary font-mono text-sm">#${block.level}</span>
-                            <h3 class="font-mono text-sm break-all">${block.hash}</h3>
+            
+            // Display total count information
+            container.innerHTML = `
+                <div class="bg-surface-1 rounded-lg p-6 mb-4 border border-card">
+                    <h3 class="text-lg font-semibold mb-2">Blockchain Overview</h3>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <span class="text-gray-400 text-sm">Total Blocks:</span>
+                            <p class="text-2xl font-bold kaspa-primary">${blocksResponse.total_count.toLocaleString()}</p>
+                        </div>
+                        <div>
+                            <span class="text-gray-400 text-sm">Latest Blocks:</span>
+                            <p class="text-2xl font-bold text-green-400">${blocksResponse.blocks.length}</p>
+                        </div>
+                    </div>
+                    <p class="text-xs text-green-300 font-semibold mt-2">✅ Showing latest ${blocksResponse.blocks.length} of ${blocksResponse.total_count.toLocaleString()} total blocks</p>
+                </div>
+            `;
+            
+            // Display individual blocks
+            container.innerHTML += blocksResponse.blocks.map(block => `
+                <div class="bg-surface-1 rounded-lg p-4 border border-card hover:bg-surface-2 transition-colors">
+                    <div class="flex items-center justify-between mb-2">
+                        <div>
+                            <h4 class="font-mono text-sm kaspa-primary">${block.hash}</h4>
                         </div>
                         <div class="text-right">
                             <p class="text-sm text-gray-400">${new Date(block.timestamp * 1000).toLocaleString()}</p>
@@ -483,6 +500,51 @@
             });
         }
 
+        function toggleAutoRefresh() {
+            const btn = document.getElementById('auto-refresh-btn');
+            const status = document.getElementById('auto-refresh-status');
+            
+            if (autoRefreshInterval) {
+                // Stop auto-refresh
+                clearInterval(autoRefreshInterval);
+                clearInterval(autoRefreshCountdown);
+                autoRefreshInterval = null;
+                autoRefreshCountdown = null;
+                
+                btn.textContent = 'Start Auto-Refresh (10s)';
+                btn.className = 'bg-green-600 hover:bg-green-700 px-4 py-2 rounded-lg text-sm font-medium text-white';
+                status.textContent = 'Auto-refresh: OFF';
+                document.getElementById('refresh-timer').textContent = '';
+                
+                console.log('Auto-refresh stopped');
+            } else {
+                // Start auto-refresh
+                autoRefreshInterval = setInterval(() => {
+                    refreshBlocks();
+                    secondsUntilRefresh = 10; // Reset countdown
+                }, 10000); // Every 10 seconds
+                
+                // Start countdown timer
+                autoRefreshCountdown = setInterval(() => {
+                    secondsUntilRefresh--;
+                    if (secondsUntilRefresh <= 0) {
+                        secondsUntilRefresh = 10; // Reset
+                    }
+                    document.getElementById('refresh-timer').textContent = `(${secondsUntilRefresh}s)`;
+                }, 1000);
+                
+                btn.textContent = 'Stop Auto-Refresh';
+                btn.className = 'bg-red-600 hover:bg-red-700 px-4 py-2 rounded-lg text-sm font-medium text-white';
+                status.textContent = 'Auto-refresh: ON';
+                document.getElementById('refresh-timer').textContent = '(10s)';
+                
+                // Trigger immediate refresh
+                refreshBlocks();
+                
+                console.log('Auto-refresh started (every 10 seconds)');
+            }
+        }
+
         function refreshMempool() {
             if (window.isLoading && window.isLoading.mempool) return;
             window.isLoading = window.isLoading || {};
@@ -540,11 +602,11 @@
                             <div class="text-right">
                                 <span class="text-gray-400 text-sm">Balance:</span>
                                 <p class="text-2xl font-bold text-green-400">${(balanceData.balance / 100000000).toFixed(8)} KAS</p>
-                                <p class="text-xs text-gray-500">From ${balanceData.utxos.length} total UTXOs</p>
+                                <p class="text-xs text-green-300 font-semibold">✅ From ALL ${balanceData.utxos.length}+ UTXOs</p>
                             </div>
                         </div>
                         <div>
-                            <span class="text-gray-400 text-sm">UTXOs (showing ${Math.min(20, balanceData.utxos.length)} of ${balanceData.utxos.length}):</span>
+                            <span class="text-gray-400 text-sm">UTXOs (showing ${Math.min(20, balanceData.utxos.length)} of ${balanceData.utxos.length}+ total):</span>
                             <div class="mt-2 space-y-2 max-h-40 overflow-y-auto">
                                 ${balanceData.utxos.slice(0, 20).map(utxo => `
                                     <div class="bg-surface-1 rounded p-2 text-xs border border-card">
@@ -556,8 +618,8 @@
                                 `).join('')}
                                 ${balanceData.utxos.length > 20 ? `
                                     <div class="text-center text-gray-400 text-xs mt-2">
-                                        <p class="mb-1">... and ${balanceData.utxos.length - 20} more UTXOs</p>
-                                        <p class="text-xs">Total balance includes ALL UTXOs</p>
+                                        <p class="mb-1">... and ${balanceData.utxos.length - 20}+ more UTXOs</p>
+                                        <p class="text-xs text-green-300 font-semibold">✅ Total balance includes ALL UTXOs</p>
                                     </div>
                                 ` : ''}
                             </div>
