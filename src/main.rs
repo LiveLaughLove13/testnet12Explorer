@@ -160,14 +160,16 @@ async fn get_blocks(State(state): State<AppState>) -> Result<Json<Vec<BlockInfo>
     let client_guard = state.client.read().await;
     let client = client_guard.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
     
+    // Limit to last 20 blocks to reduce data transfer
     let response = client.get_blocks(None, true, false).await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     
     let blocks: Vec<BlockInfo> = response.blocks.into_iter()
+        .take(20) // Limit to 20 blocks
         .map(|block| BlockInfo {
             hash: block.header.hash.to_string(),
             level: block.header.daa_score,
-            parents: block.header.parents_by_level.iter().map(|p| format!("{:?}", p)).collect(),
+            parents: format!("{} parents", block.header.parents_by_level.len()), // Simplified
             transactions: vec![], // Simplified for now
             timestamp: block.header.timestamp as i64,
             difficulty: block.header.bits as f64,
@@ -220,12 +222,14 @@ async fn get_mempool(State(state): State<AppState>) -> Result<Json<MempoolInfo>,
         }
     };
     
+    // Limit to first 50 transactions to reduce lag
     let transactions: Vec<TransactionInfo> = response.into_iter()
+        .take(50) // Limit to 50 transactions
         .enumerate()
         .map(|(i, entry)| TransactionInfo {
             id: format!("tx-{}", i),
-            inputs: entry.transaction.inputs.iter().map(|i| format!("{:?}", i.previous_outpoint)).collect(),
-            outputs: entry.transaction.outputs.iter().map(|o| format!("{:?}", o.script_public_key)).collect(),
+            inputs: vec![format!("{} inputs", entry.transaction.inputs.len())], // Simplified
+            outputs: vec![format!("{} outputs", entry.transaction.outputs.len())], // Simplified
             amount: entry.transaction.outputs.iter().map(|o| o.value).sum(),
         })
         .collect();
@@ -262,14 +266,16 @@ async fn get_address_balance(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     
     let mut total_balance = 0u64;
+    // Limit UTXOs to first 100 to reduce lag
     let utxos: Vec<UtxoInfo> = utxos_response.into_iter()
+        .take(100) // Limit to 100 UTXOs
         .map(|utxo| {
             let amount = utxo.utxo_entry.amount;
             total_balance += amount;
             UtxoInfo {
                 outpoint: format!("{}:{}", utxo.outpoint.transaction_id, utxo.outpoint.index),
                 amount,
-                script_public_key: format!("{:?}", utxo.utxo_entry.script_public_key),
+                script_public_key: format!("script_{}", utxo.outpoint.index), // Simplified
             }
         })
         .collect();
