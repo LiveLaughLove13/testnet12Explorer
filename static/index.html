@@ -209,6 +209,21 @@
 
         </div>
 
+    <script>
+        const API_BASE = '/api';
+        let currentTab = 'blocks';
+        let refreshInterval;
+        let autoRefreshInterval = null;
+        let autoRefreshCountdown = null;
+        let secondsUntilRefresh = 10;
+        
+        // Performance optimizations
+        let isLoading = {
+            blocks: false,
+            mempool: false,
+            address: false
+        };
+
         // Debounce function to prevent excessive API calls
         function debounce(func, wait) {
             let timeout;
@@ -235,9 +250,6 @@
                 }
             }
         }
-        // Initialize
-        let currentTab = 'blocks';
-        let refreshInterval;
         
         // Debounced address search to prevent excessive API calls
         const debouncedSearchAddress = debounce(async function() {
