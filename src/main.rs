@@ -204,8 +204,21 @@ async fn get_mempool(State(state): State<AppState>) -> Result<Json<MempoolInfo>,
     let client_guard = state.client.read().await;
     let client = client_guard.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
     
-    let response = client.get_mempool_entries(false, true).await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    // Try to get mempool entries with different parameter combinations
+    let response = match client.get_mempool_entries(false, true).await {
+        Ok(response) => response,
+        Err(e) => {
+            log::error!("Failed to get mempool entries with (false, true): {:?}", e);
+            // Try alternative parameters
+            match client.get_mempool_entries(true, false).await {
+                Ok(response) => response,
+                Err(e2) => {
+                    log::error!("Failed to get mempool entries with (true, false): {:?}", e2);
+                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                }
+            }
+        }
+    };
     
     let transactions: Vec<TransactionInfo> = response.into_iter()
         .enumerate()
