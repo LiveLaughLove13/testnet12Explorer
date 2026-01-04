@@ -759,6 +759,10 @@
             try {
                 const response = await axios.get(`${API_BASE}/address/${encodeURIComponent(address)}`);
                 const balanceData = response.data;
+                const utxoTotal = (balanceData.utxo_count_total !== undefined && balanceData.utxo_count_total !== null)
+                    ? balanceData.utxo_count_total
+                    : balanceData.utxos.length;
+                const showingCount = Math.min(20, balanceData.utxos.length);
                 
                 addressResult.innerHTML = `
                     <div class="bg-surface-2 rounded-lg p-4 border border-card">
@@ -770,11 +774,11 @@
                             <div class="text-right">
                                 <span class="text-gray-400 text-sm">Balance:</span>
                                 <p class="text-2xl font-bold text-green-400">${(balanceData.balance / 100000000).toFixed(8)} KAS</p>
-                                <p class="text-xs text-green-300 font-semibold">✅ From ALL ${balanceData.utxos.length}+ UTXOs</p>
+                                <p class="text-xs text-green-300 font-semibold">✅ From ALL ${utxoTotal} UTXOs</p>
                             </div>
                         </div>
                         <div>
-                            <span class="text-gray-400 text-sm">UTXOs (showing ${Math.min(20, balanceData.utxos.length)} of ${balanceData.utxos.length}+ total):</span>
+                            <span class="text-gray-400 text-sm">UTXOs (showing ${showingCount} of ${utxoTotal} total):</span>
                             <div class="mt-2 space-y-2 max-h-40 overflow-y-auto">
                                 ${balanceData.utxos.slice(0, 20).map(utxo => `
                                     <div class="bg-surface-1 rounded p-2 text-xs border border-card">
@@ -784,9 +788,9 @@
                                         </div>
                                     </div>
                                 `).join('')}
-                                ${balanceData.utxos.length > 20 ? `
+                                ${utxoTotal > 20 ? `
                                     <div class="text-center text-gray-400 text-xs mt-2">
-                                        <p class="mb-1">... and ${balanceData.utxos.length - 20}+ more UTXOs</p>
+                                        <p class="mb-1">... and ${Math.max(utxoTotal - 20, 0)} more UTXOs</p>
                                         <p class="text-xs text-green-300 font-semibold">✅ Total balance includes ALL UTXOs</p>
                                     </div>
                                 ` : ''}
