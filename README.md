@@ -9,20 +9,28 @@ A standalone web explorer for Kaspa Testnet 12 that can run independently withou
 - Mempool monitoring
 - Modern web interface with Tailwind CSS
 - RESTful API endpoints
-- Auto-refresh functionality
-- Completely standalone - no need to clone rusty-kaspa repository
+- Real-time auto-updating blocks and mempool
+- Explorer is standalone, but requires access to a running kaspad node
 
 ## Prerequisites
 
 - Rust 1.82.0 or higher
-- A running Kaspa node with RPC enabled
+- A running kaspad node with gRPC enabled
+- `curl` available on PATH (required for `seeder.bat` port detection on Windows)
 
 ## Running Kaspa Testnet 12
 
 Start your Kaspa testnet 12 node with the following command:
 
 ```bash
-cargo run --release --bin=kaspad -- --utxoindex --testnet --netsuffix=12 --enable-unsynced-mining --listen=0.0.0.0:16311 --addpeer=82.166.83.140 --appdir "D:\testnet12"
+cargo run --release --bin=kaspad -- \
+  --utxoindex \
+  --testnet \
+  --netsuffix=12 \
+  --enable-unsynced-mining \
+  --listen=0.0.0.0:16311 \
+  --addpeer=82.166.83.140 \
+  --appdir "D:\testnet12"
 ```
 
 ## Installation and Usage
@@ -37,7 +45,18 @@ cd D:\kaspa-testnet12-explorer
 cargo build --release
 ```
 
-3. **Run the explorer**:
+3. **Run the explorer (recommended)**:
+```bat
+seeder.bat
+```
+
+`seeder.bat` will:
+
+- Detect a running kaspad instance on common ports
+- Start the explorer with the detected kaspad URL
+- Print instructions for starting kaspad manually if it is not running
+
+4. **Run the explorer (manual)**:
 ```bash
 cargo run --release -- --kaspad-url 127.0.0.1:16210 --port 3000
 ```
@@ -51,10 +70,9 @@ cargo run --release -- --kaspad-url 127.0.0.1:16210 --port 3000
 
 - `GET /api/info` - Network information and connection status
 - `GET /api/blocks` - Latest blocks
-- `GET /api/blocks/:hash` - Specific block details
 - `GET /api/mempool` - Current mempool state
 - `GET /api/address/:address` - Address balance and UTXO details
-- `GET /api/tx/:id` - Transaction details (placeholder)
+- `GET /api/peers` - Peer connection information
 
 ## Accessing the Explorer
 
@@ -66,7 +84,7 @@ The explorer will automatically connect to your Kaspa node and display:
 - Latest blocks with timestamps and difficulty
 - Mempool size and pending transactions
 - Address balance lookup with UTXO details
-- Real-time updates every 30 seconds
+- Real-time updates (blocks and mempool)
 
 ## Standalone Features
 

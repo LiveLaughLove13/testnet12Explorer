@@ -1,0 +1,613 @@
+        const API_BASE = '/api';
+        let currentTab = 'blocks';
+        let refreshInterval;
+        let autoRefreshInterval = null;
+        let autoRefreshCountdown = null;
+        let secondsUntilRefresh = 2; // Changed from 10 to 2 for real-time
+        
+        window.addEventListener('load', () => {
+            setTimeout(() => {
+                console.log('Auto-starting block refresh...');
+                toggleAutoRefresh();
+            }, 2000); // Start after 2 seconds
+            
+            // Also start mempool auto-refresh
+            setInterval(() => {
+                if (currentTab === 'mempool') {
+                    refreshMempool();
+                }
+            }, 5000); // Refresh mempool every 5 seconds
+        });
+        
+        // Performance optimizations
+        let isLoading = {
+            blocks: false,
+            mempool: false,
+            address: false
+        };
+
+        // Debounce function to prevent excessive API calls
+        function debounce(func, wait) {
+            let timeout;
+            return function executedFunction(...args) {
+                const later = () => {
+                    clearTimeout(timeout);
+                    func(...args);
+                };
+                clearTimeout(timeout);
+                timeout = setTimeout(later, wait);
+            };
+        }
+
+        // Throttle function for auto-refresh
+        function throttle(func, limit) {
+            let inThrottle;
+            return function() {
+                const args = arguments;
+                const context = this;
+                if (!inThrottle) {
+                    func.apply(context, args);
+                    inThrottle = true;
+                    setTimeout(() => inThrottle = false, limit);
+                }
+            }
+        }
+        
+        // Debounced address search to prevent excessive API calls
+        const debouncedSearchAddress = debounce(async function() {
+            await performAddressSearch();
+        }, 500);
+        
+        // Throttled auto-refresh to reduce server load
+        const throttledRefresh = throttle(async function() {
+            const isConnected = await fetchNetworkInfo();
+            if (isConnected) {
+                if (currentTab === 'blocks') {
+                    fetchBlocks();
+                } else if (currentTab === 'mempool') {
+                    fetchMempool();
+                }
+            }
+        }, 5000); // Throttle to every 5 seconds max
+
+        async function fetchNetworkInfo() {
+            try {
+                const response = await axios.get(`${API_BASE}/info`);
+                const info = response.data;
+                
+                document.getElementById('network-name').textContent = info.network;
+                document.getElementById('server-url').textContent = info.server_url;
+                document.getElementById('connection-status').textContent = info.is_connected ? 'Connected' : 'Disconnected';
+                
+                const statusLoader = document.getElementById('status-loader');
+                const statusText = document.getElementById('status-text');
+                
+                if (info.is_connected) {
+                    statusLoader.style.display = 'none';
+                    statusText.textContent = 'Connected';
+                    statusText.className = 'text-green-400';
+                } else {
+                    statusLoader.style.display = 'block';
+                    statusText.textContent = 'Disconnected';
+                    statusText.className = 'text-red-400';
+                }
+                
+                // Fetch peer info when network info is updated
+                fetchPeerInfo();
+                
+                return info.is_connected;
+            } catch (error) {
+                console.error('Failed to fetch network info:', error);
+                document.getElementById('status-loader').style.display = 'none';
+                document.getElementById('status-text').textContent = 'Error';
+                document.getElementById('status-text').className = 'text-red-400';
+                return false;
+            }
+        }
+
+        async function fetchPeerInfo() {
+            if (window.isLoading && window.isLoading.peers) return;
+            window.isLoading = window.isLoading || {};
+            window.isLoading.peers = true;
+            
+            try {
+                const response = await axios.get(`${API_BASE}/peers`);
+                const peers = response.data;
+                displayPeerInfo(peers);
+            } catch (error) {
+                console.error('Failed to fetch peer info:', error);
+                document.getElementById('peers-container').innerHTML = `
+                    <div class="text-sm text-red-400">Failed to load peer info: ${error.message}</div>
+                `;
+            } finally {
+                if (window.isLoading) window.isLoading.peers = false;
+            }
+        }
+
+        function displayPeerInfo(peers) {
+            const container = document.getElementById('peers-container');
+            
+            if (!peers || peers.length === 0) {
+                container.innerHTML = '<div class="text-sm text-gray-400">No peer information available</div>';
+                return;
+            }
+            
+            container.innerHTML = peers.map(peer => `
+                <div class="bg-surface-2 rounded p-3 border border-card">
+                    <div class="flex justify-between items-center">
+                        <div>
+                            <span class="text-xs text-gray-400">Peer ID:</span>
+                            <span class="font-mono text-sm kaspa-primary">${peer.id}</span>
+                        </div>
+                        <div class="text-right">
+                            <span class="w-2 h-2 rounded-full ${peer.is_connected ? 'bg-green-400' : 'bg-red-400'}"></span>
+                        </div>
+                    </div>
+                    <div class="text-xs text-gray-600 mt-1">
+                        <div>Address: <span class="font-mono">${peer.address}</span></div>
+                        <div>Last Seen: <span class="text-green-400">${peer.last_seen}</span></div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        async function fetchBlocks() {
+            try {
+                const response = await axios.get(`${API_BASE}/blocks`, { timeout: 8000 });
+                const blocks = response.data;
+                displayBlocks(blocks);
+            } catch (error) {
+                console.error('Failed to fetch blocks:', error);
+                const container = document.getElementById('blocks-container');
+                const isInitialized = container && container.hasAttribute('data-initialized');
+                if (isInitialized) {
+                    const blocksInfoElement = document.getElementById('blocks-info');
+                    if (blocksInfoElement) {
+                        blocksInfoElement.textContent = `Failed to update blocks: ${error.message}`;
+                    }
+                    return;
+                }
+
+                if (container) {
+                    container.innerHTML = `
+                        <div class="text-center py-8 text-red-400">
+                            <p>Failed to load blocks: ${error.message}</p>
+                        </div>
+                    `;
+                }
+            }
+        }
+
+        function displayBlocks(blocksResponse) {
+            const container = document.getElementById('blocks-container');
+            
+            if (!blocksResponse || !blocksResponse.blocks || blocksResponse.blocks.length === 0) {
+                container.innerHTML = '<div class="text-center py-8 text-gray-400">No blocks found</div>';
+                return;
+            }
+            
+            // Initialize on first load
+            if (!container.hasAttribute('data-initialized')) {
+                container.setAttribute('data-initialized', 'true');
+                
+                // Create the static structure once
+                container.innerHTML = `
+                    <div class="bg-surface-1 rounded-lg p-6 mb-4 border border-card">
+                        <h3 class="text-lg font-semibold mb-2">Blockchain Overview</h3>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                                <span class="text-gray-400 text-sm">Total Blocks:</span>
+                                <p class="text-2xl font-bold kaspa-primary" id="total-blocks-count">0</p>
+                            </div>
+                            <div>
+                                <span class="text-gray-400 text-sm">Latest Blocks:</span>
+                                <p class="text-2xl font-bold text-green-400" id="latest-blocks-count">0</p>
+                            </div>
+                        </div>
+                        <p class="text-xs text-green-300 font-semibold mt-2" id="blocks-info">✅ Loading...</p>
+                    </div>
+                    <div id="blocks-list" class="space-y-4">
+                        <!-- Blocks will be inserted here -->
+                    </div>
+                `;
+                
+                // Initialize blocks list
+                const blocksList = document.getElementById('blocks-list');
+                if (blocksList) {
+                    for (let i = 0; i < 20; i++) {
+                        const blockDiv = document.createElement('div');
+                        blockDiv.className = 'bg-surface-1 rounded-lg p-4 border border-card hover:bg-surface-2 transition-all duration-300 opacity-0';
+                        blockDiv.innerHTML = `
+                            <div class="flex items-center justify-between mb-2">
+                                <div>
+                                    <h4 class="font-mono text-sm kaspa-primary" id="block-hash-${i}">Loading...</h4>
+                                </div>
+                                <div class="text-right">
+                                    <p class="text-sm text-gray-400" id="block-time-${i}">-</p>
+                                    <p class="text-xs text-gray-500" id="block-difficulty-${i}">-</p>
+                                </div>
+                            </div>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                                <div>
+                                    <span class="text-gray-400">Parents:</span>
+                                    <p class="font-mono text-xs break-all" id="block-parents-${i}">-</p>
+                                </div>
+                                <div>
+                                    <span class="text-gray-400">Transactions:</span>
+                                    <p class="kaspa-primary" id="block-tx-${i}">-</p>
+                                </div>
+                            </div>
+                        `;
+                        blocksList.appendChild(blockDiv);
+                    }
+                }
+            }
+            
+            // Update only the data values - no DOM rebuilding
+            const totalBlocksElement = document.getElementById('total-blocks-count');
+            const latestBlocksElement = document.getElementById('latest-blocks-count');
+            const blocksInfoElement = document.getElementById('blocks-info');
+            
+            // Update overview numbers with animation
+            if (totalBlocksElement) {
+                const currentTotal = parseInt(totalBlocksElement.textContent.replace(/,/g, '')) || 0;
+                if (currentTotal !== blocksResponse.total_count) {
+                    animateNumber(totalBlocksElement, currentTotal, blocksResponse.total_count);
+                }
+            }
+            
+            if (latestBlocksElement) {
+                latestBlocksElement.textContent = blocksResponse.blocks.length;
+            }
+            
+            if (blocksInfoElement) {
+                blocksInfoElement.textContent = `✅ Showing latest ${blocksResponse.blocks.length} of ${blocksResponse.total_count.toLocaleString()} total blocks`;
+            }
+            
+            // Update individual blocks efficiently
+            const blocksList = document.getElementById('blocks-list');
+            if (blocksList) {
+                const blockElements = blocksList.children;
+                
+                blocksResponse.blocks.forEach((block, index) => {
+                    if (index < blockElements.length) {
+                        const blockElement = blockElements[index];
+                        const isNewBlock = blockElement.getAttribute('data-block-hash') !== block.hash;
+                        
+                        // Update data with null checks
+                        const hashElement = document.getElementById(`block-hash-${index}`);
+                        const timeElement = document.getElementById(`block-time-${index}`);
+                        const difficultyElement = document.getElementById(`block-difficulty-${index}`);
+                        const parentsElement = document.getElementById(`block-parents-${index}`);
+                        const txElement = document.getElementById(`block-tx-${index}`);
+                        
+                        if (hashElement) hashElement.textContent = block.hash;
+                        if (timeElement) {
+                            const tsMs = block.timestamp > 1000000000000 ? block.timestamp : (block.timestamp * 1000);
+                            timeElement.textContent = new Date(tsMs).toLocaleString();
+                        }
+                        if (difficultyElement) difficultyElement.textContent = `Difficulty: ${block.difficulty.toFixed(2)}`;
+                        if (parentsElement) parentsElement.textContent = block.parents || 'None';
+                        if (txElement) txElement.textContent = block.tx_count;
+                        
+                        // Mark block
+                        blockElement.setAttribute('data-block-hash', block.hash);
+                        
+                        // Animate new blocks
+                        if (isNewBlock) {
+                            blockElement.style.opacity = '0';
+                            blockElement.style.transform = 'translateY(-10px)';
+                            
+                            setTimeout(() => {
+                                blockElement.style.transition = 'all 0.5s ease-out';
+                                blockElement.style.opacity = '1';
+                                blockElement.style.transform = 'translateY(0)';
+                                blockElement.style.backgroundColor = 'var(--kaspa-glow)';
+                                
+                                setTimeout(() => {
+                                    blockElement.style.backgroundColor = '';
+                                }, 1000);
+                            }, index * 50);
+                        }
+                    }
+                });
+                
+                // Hide unused block slots
+                for (let i = blocksResponse.blocks.length; i < blockElements.length; i++) {
+                    blockElements[i].style.opacity = '0';
+                    blockElements[i].style.transform = 'translateY(10px)';
+                }
+            }
+        }
+        
+        function animateNumber(element, start, end) {
+            if (!element) return;
+            
+            const duration = 500;
+            const startTime = Date.now();
+            
+            function update() {
+                const currentTime = Date.now();
+                const elapsed = currentTime - startTime;
+                const progress = Math.min(elapsed / duration, 1);
+                
+                const current = Math.floor(start + (end - start) * progress);
+                element.textContent = current.toLocaleString();
+                
+                if (progress < 1) {
+                    requestAnimationFrame(update);
+                }
+            }
+            
+            requestAnimationFrame(update);
+        }
+
+        async function fetchMempool() {
+            try {
+                const response = await axios.get(`${API_BASE}/mempool`);
+                const mempool = response.data;
+                displayMempool(mempool);
+            } catch (error) {
+                console.error('Failed to fetch mempool:', error);
+                document.getElementById('mempool-container').innerHTML = `
+                    <div class="text-center py-8 text-red-400">
+                        <p>Failed to load mempool: ${error.message}</p>
+                    </div>
+                `;
+            }
+        }
+
+        function displayMempool(mempool) {
+            const container = document.getElementById('mempool-container');
+
+            if (container) {
+                container.setAttribute('data-initialized', 'true');
+            }
+            
+            container.innerHTML = `
+                <div class="bg-surface-1 rounded-lg p-6 mb-4 border border-card">
+                    <h3 class="text-lg font-semibold mb-2">Mempool Size</h3>
+                    <p class="text-2xl font-bold kaspa-primary">${mempool.size} transactions</p>
+                </div>
+            `;
+
+            if (mempool.transactions.length === 0) {
+                container.innerHTML += '<div class="text-center py-8 text-gray-400">No transactions in mempool</div>';
+                return;
+            }
+
+            container.innerHTML += mempool.transactions.map(tx => {
+                const label = (tx.id && tx.id.length > 0) ? tx.id : '(unknown txid)';
+                return `
+                <div class="bg-surface-1 rounded-lg p-4 border border-card hover:bg-surface-2 transition-colors">
+                    <div class="flex items-center justify-between mb-2">
+                        <h4 class="font-mono text-sm kaspa-primary">${label}</h4>
+                        <p class="text-sm text-green-400">${(tx.amount / 100000000).toFixed(8)} KAS</p>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
+                        <div>
+                            <span class="text-gray-400">Inputs:</span>
+                            <p class="font-mono break-all">${tx.input_count}</p>
+                        </div>
+                        <div>
+                            <span class="text-gray-400">Outputs:</span>
+                            <p class="font-mono break-all">${tx.output_count}</p>
+                        </div>
+                    </div>
+                </div>
+                `;
+            }).join('');
+        }
+
+        function showTab(tabName) {
+            // Hide all tabs
+            document.querySelectorAll('.tab-content').forEach(tab => {
+                tab.classList.add('hidden');
+            });
+            
+            // Remove active state from all tab buttons
+            document.querySelectorAll('.tab-button').forEach(button => {
+                button.classList.remove('kaspa-primary', 'border-b-2', 'border-kaspa-primary');
+                button.classList.add('text-gray-400', 'hover:text-gray-200');
+            });
+            
+            // Show selected tab
+            document.getElementById(`${tabName}-tab`).classList.remove('hidden');
+            
+            // Set active button
+            const activeButton = document.querySelector(`[data-tab="${tabName}"]`);
+            activeButton.classList.remove('text-gray-400', 'hover:text-gray-200');
+            activeButton.classList.add('kaspa-primary', 'border-b-2', 'border-kaspa-primary');
+            
+            currentTab = tabName;
+            
+            // Load data for the tab
+            if (tabName === 'blocks') {
+                refreshBlocks();
+            } else if (tabName === 'mempool') {
+                refreshMempool();
+            }
+        }
+
+        async function refreshBlocks() {
+            if (window.isLoading && window.isLoading.blocks) return;
+            window.isLoading = window.isLoading || {};
+            window.isLoading.blocks = true;
+
+            const container = document.getElementById('blocks-container');
+            const isInitialized = container && container.hasAttribute('data-initialized');
+            if (!isInitialized && container) {
+                container.innerHTML = `
+                    <div class="text-center py-8">
+                        <div class="loader mx-auto mb-4"></div>
+                        <p>Loading blocks...</p>
+                    </div>
+                `;
+            }
+
+            try {
+                await fetchBlocks();
+            } finally {
+                if (window.isLoading) window.isLoading.blocks = false;
+            }
+        }
+
+        function toggleAutoRefresh() {
+            const btn = document.getElementById('auto-refresh-btn');
+            const status = document.getElementById('auto-refresh-status');
+            
+            if (autoRefreshInterval) {
+                // Stop auto-refresh
+                clearTimeout(autoRefreshInterval);
+                clearInterval(autoRefreshCountdown);
+                autoRefreshInterval = null;
+                autoRefreshCountdown = null;
+                
+                btn.textContent = 'Start Real-time Updates';
+                btn.className = 'bg-green-600 hover:bg-green-700 px-4 py-2 rounded-lg text-sm font-medium text-white';
+                status.textContent = 'Real-time updates: OFF';
+                document.getElementById('refresh-timer').textContent = '';
+                
+                console.log('Real-time updates stopped');
+            } else {
+                // Start real-time updates (sequential: no overlap)
+                const run = async () => {
+                    if (!autoRefreshInterval) return;
+                    await refreshBlocks();
+                    if (!autoRefreshInterval) return;
+                    autoRefreshInterval = setTimeout(run, 2000);
+                };
+                autoRefreshInterval = setTimeout(run, 0);
+                
+                // Start countdown timer
+                autoRefreshCountdown = setInterval(() => {
+                    secondsUntilRefresh--;
+                    if (secondsUntilRefresh <= 0) {
+                        secondsUntilRefresh = 2; // Reset to 2 seconds
+                    }
+                    document.getElementById('refresh-timer').textContent = `(${secondsUntilRefresh}s)`;
+                }, 1000);
+                
+                btn.textContent = 'Stop Real-time Updates';
+                btn.className = 'bg-red-600 hover:bg-red-700 px-4 py-2 rounded-lg text-sm font-medium text-white';
+                status.textContent = 'Real-time updates: ON';
+                document.getElementById('refresh-timer').textContent = '(2s)';
+                
+                console.log('Real-time updates started (every 2 seconds)');
+            }
+        }
+
+        function refreshMempool() {
+            if (window.isLoading && window.isLoading.mempool) return;
+            window.isLoading = window.isLoading || {};
+            window.isLoading.mempool = true;
+
+            const container = document.getElementById('mempool-container');
+            const isInitialized = container && container.hasAttribute('data-initialized');
+            if (!isInitialized && container) {
+                container.innerHTML = `
+                    <div class="text-center py-8">
+                        <div class="loader mx-auto mb-4"></div>
+                        <p>Loading mempool...</p>
+                    </div>
+                `;
+            }
+            fetchMempool().finally(() => {
+                if (window.isLoading) window.isLoading.mempool = false;
+            });
+        }
+
+        async function searchAddress() {
+            debouncedSearchAddress();
+        }
+        
+        async function performAddressSearch() {
+            const addressInput = document.getElementById('address-input');
+            const addressResult = document.getElementById('address-result');
+            const address = addressInput.value.trim();
+            
+            if (!address) {
+                alert('Please enter a Kaspa address');
+                return;
+            }
+            
+            if (window.isLoading && window.isLoading.address) return;
+            window.isLoading = window.isLoading || {};
+            window.isLoading.address = true;
+            
+            // Show loading
+            addressResult.innerHTML = `
+                <div class="text-center py-4">
+                    <div class="loader mx-auto mb-2"></div>
+                    <p>Searching address...</p>
+                </div>
+            `;
+            addressResult.classList.remove('hidden');
+            
+            try {
+                const response = await axios.get(`${API_BASE}/address/${encodeURIComponent(address)}`);
+                const balanceData = response.data;
+                const utxoTotal = (balanceData.utxo_count_total !== undefined && balanceData.utxo_count_total !== null)
+                    ? balanceData.utxo_count_total
+                    : balanceData.utxos.length;
+                const showingCount = Math.min(20, balanceData.utxos.length);
+                
+                addressResult.innerHTML = `
+                    <div class="bg-surface-2 rounded-lg p-4 border border-card">
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                            <div>
+                                <span class="text-gray-400 text-sm">Address:</span>
+                                <p class="font-mono text-xs break-all">${balanceData.address}</p>
+                            </div>
+                            <div class="text-right">
+                                <span class="text-gray-400 text-sm">Balance:</span>
+                                <p class="text-2xl font-bold text-green-400">${(balanceData.balance / 100000000).toFixed(8)} KAS</p>
+                                <p class="text-xs text-green-300 font-semibold">✅ From ALL ${utxoTotal} UTXOs</p>
+                            </div>
+                        </div>
+                        <div>
+                            <span class="text-gray-400 text-sm">UTXOs (showing ${showingCount} of ${utxoTotal} total):</span>
+                            <div class="mt-2 space-y-2 max-h-40 overflow-y-auto">
+                                ${balanceData.utxos.slice(0, 20).map(utxo => `
+                                    <div class="bg-surface-1 rounded p-2 text-xs border border-card">
+                                        <div class="flex justify-between">
+                                            <span class="font-mono">${utxo.outpoint}</span>
+                                            <span class="text-green-400">${(utxo.amount / 100000000).toFixed(8)} KAS</span>
+                                        </div>
+                                    </div>
+                                `).join('')}
+                                ${utxoTotal > 20 ? `
+                                    <div class="text-center text-gray-400 text-xs mt-2">
+                                        <p class="mb-1">... and ${Math.max(utxoTotal - 20, 0)} more UTXOs</p>
+                                        <p class="text-xs text-green-300 font-semibold">✅ Total balance includes ALL UTXOs</p>
+                                    </div>
+                                ` : ''}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            } catch (error) {
+                console.error('Failed to fetch address balance:', error);
+                addressResult.innerHTML = `
+                    <div class="bg-red-900 bg-opacity-50 rounded-lg p-4">
+                        <p class="text-red-400">Failed to fetch address balance: ${error.message}</p>
+                    </div>
+                `;
+            } finally {
+                if (window.isLoading) window.isLoading.address = false;
+            }
+        }
+
+        // Initialize
+        async function init() {
+            await fetchNetworkInfo();
+            fetchBlocks();
+            
+            // Use throttled auto-refresh instead of setInterval to reduce load
+            setInterval(() => {
+                throttledRefresh();
+            }, 30000); // Check every 30 seconds, but actual refresh is throttled
+        }
+
+        // Initialize on page load
+        init();

@@ -1,0 +1,92 @@
+        .loader {
+            border: 4px solid rgba(255, 255, 255, 0.1);
+            border-top: 4px solid var(--kaspa-primary);
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 2s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        /* Kaspa Brand Colors */
+        :root {
+            --kaspa-primary: #70c7ba;
+            --kaspa-accent: #49eacb;
+            --surface-dark: rgba(18, 20, 24, 0.78);
+            --surface-light: rgba(255, 255, 255, 0.92);
+            --bg-gradient-start: #0c0d10;
+            --bg-gradient-mid: #121418;
+            --text-primary: rgba(255, 255, 255, 0.92);
+            --text-secondary: rgba(255, 255, 255, 0.55);
+            --card-border: rgba(255, 255, 255, 0.10);
+            --shadow: 0 30px 80px rgba(0, 0, 0, 0.55);
+            --font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            --kaspa-glow: rgba(73, 234, 203, 0.18);
+            --bg-0: var(--bg-gradient-start);
+            --bg-1: var(--bg-gradient-mid);
+            --bg-2: #0b0c0f;
+            --surface-0: rgba(14, 16, 18, 0.58);
+            --surface-1: rgba(14, 16, 18, 0.72);
+            --surface-2: rgba(14, 16, 18, 0.86);
+            --border: var(--card-border);
+            --border-strong: rgba(255, 255, 255, 0.14);
+            --text: var(--text-primary);
+            --text-muted: var(--text-secondary);
+            --shadow-soft: 0 22px 60px rgba(0, 0, 0, 0.42);
+            --radius-xl: 22px;
+            --radius-lg: 18px;
+            --radius-md: 14px;
+        }
+        
+        .kaspa-primary { color: var(--kaspa-primary); }
+        .kaspa-accent { color: var(--kaspa-accent); }
+        .kaspa-glow { color: var(--kaspa-glow); }
+        
+        .bg-kaspa-primary { background-color: var(--kaspa-primary); }
+        .bg-kaspa-accent { background-color: var(--kaspa-accent); }
+        .bg-surface-dark { background-color: var(--surface-dark); }
+        .bg-surface-1 { background-color: var(--surface-1); }
+        .bg-surface-2 { background-color: var(--surface-2); }
+        
+        .border-kaspa-primary { border-color: var(--kaspa-primary); }
+        .border-card { border-color: var(--card-border); }
+        
+        .hover-bg-kaspa-primary:hover { background-color: var(--kaspa-accent); }
+        
+        /* Custom scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: var(--bg-1);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: var(--kaspa-primary);
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--kaspa-accent);
+        }
+        
+        body {
+            font-family: var(--font-family);
+            background: linear-gradient(180deg, var(--bg-gradient-start) 0%, var(--bg-gradient-mid) 62%, var(--bg-gradient-start) 100%);
+            color: var(--text);
+            min-height: 100vh;
+            letter-spacing: 0.01em;
+        }
+        
+        body::before {
+            content: "";
+            position: fixed;
+            inset: -2px;
+            pointer-events: none;
+            background:
+                radial-gradient(1200px 720px at 50% 40%, rgba(0, 0, 0, 0.00) 0%, rgba(0, 0, 0, 0.52) 72%, rgba(0, 0, 0, 0.78) 100%),
+                radial-gradient(700px 420px at 50% 35%, rgba(73, 234, 203, 0.04) 0%, rgba(73, 234, 203, 0) 60%);
+            filter: blur(0);
+            opacity: 1;
+        }
